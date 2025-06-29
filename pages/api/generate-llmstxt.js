@@ -95,11 +95,11 @@ async function crawlWebsite(baseUrl) {
       }
     }
     
-    // Step 4: Organize content by categories
-    const organizedContent = organizeContent(pagesData);
+    // Step 4: Analyze content and create dynamic categories
+    const dynamicCategories = createDynamicCategories(pagesData);
     
     // Step 5: Generate llms.txt content
-    const llmsTxt = generateLlmsTxt(baseUrl, pagesData, organizedContent);
+    const llmsTxt = generateLlmsTxt(baseUrl, pagesData, dynamicCategories);
     
     return {
       success: true,
@@ -243,7 +243,7 @@ async function crawlPage(url, domain) {
           links.push({
             url: fullUrl,
             text: text,
-            category: categorizeLink(fullUrl, text, title)
+            category: null // Will be determined by dynamic categorization
           });
         }
       }
@@ -273,87 +273,164 @@ function isInternalLink(url, domain) {
   }
 }
 
-function categorizeLink(url, text, pageTitle) {
-  const urlLower = url.toLowerCase();
-  const textLower = text.toLowerCase();
-  
-  // General Information
-  const generalKeywords = ['about', 'contact', 'disclaimer', 'privacy', 'terms', 'policy'];
-  if (generalKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'general';
-  }
-  
-  // Vehicle Categories
-  const vehicleKeywords = ['scooter', 'bike', 'car', 'vehicle', 'tesla', 'audi', 'kia', 'tata'];
-  if (vehicleKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'vehicles';
-  }
-  
-  // Tools and Calculators
-  const toolKeywords = ['calculator', 'estimator', 'finder', 'tool', 'emi', 'tco', 'range', 'charging'];
-  if (toolKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'tools';
-  }
-  
-  // News and Blog
-  const newsKeywords = ['news', 'blog', 'article', 'post', 'update'];
-  if (newsKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'news';
-  }
-  
-  // Technical/Glossary
-  const techKeywords = ['glossary', 'technical', 'battery', 'converter', 'coolant', 'charging'];
-  if (techKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'technical';
-  }
-  
-  // Guides and Resources
-  const guideKeywords = ['guide', 'resource', 'help', 'support', 'faq'];
-  if (guideKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'guides';
-  }
-  
-  // Services
-  const serviceKeywords = ['service', 'consultation', 'support', 'help'];
-  if (serviceKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'services';
-  }
-  
-  // Default to navigation
-  return 'navigation';
-}
-
-function organizeContent(pagesData) {
-  const organized = {
-    general: new Map(),
-    vehicles: new Map(),
-    tools: new Map(),
-    news: new Map(),
-    technical: new Map(),
-    guides: new Map(),
-    services: new Map(),
-    navigation: new Map()
-  };
-  
+function createDynamicCategories(pagesData) {
+  // Collect all links and their context
+  const allLinks = [];
   pagesData.forEach(page => {
     page.links.forEach(link => {
-      const linkInfo = {
-        url: link.url,
-        text: link.text,
-        page_title: page.title
-      };
-      
-      // Use Map to automatically handle duplicates
-      if (!organized[link.category].has(link.url)) {
-        organized[link.category].set(link.url, linkInfo);
-      }
+      allLinks.push({
+        ...link,
+        page_title: page.title,
+        page_url: page.url,
+        context: `${page.title} ${page.description} ${page.first_paragraph}`.toLowerCase()
+      });
     });
   });
   
-  return organized;
+  // Analyze link patterns and create categories
+  const categories = analyzeLinkPatterns(allLinks);
+  
+  // Categorize each link
+  const categorizedLinks = {};
+  categories.forEach(category => {
+    categorizedLinks[category.name] = new Map();
+  });
+  
+  allLinks.forEach(link => {
+    const category = determineLinkCategory(link, categories);
+    if (category && !categorizedLinks[category].has(link.url)) {
+      categorizedLinks[category].set(link.url, {
+        url: link.url,
+        text: link.text,
+        page_title: link.page_title
+      });
+    }
+  });
+  
+  return { categories, categorizedLinks };
 }
 
-function generateLlmsTxt(baseUrl, pagesData, organizedContent) {
+function analyzeLinkPatterns(allLinks) {
+  const categories = [];
+  const linkTexts = allLinks.map(link => link.text.toLowerCase());
+  const linkUrls = allLinks.map(link => link.url.toLowerCase());
+  
+  // Common patterns that indicate categories
+  const patterns = {
+    'General Information': {
+      keywords: ['about', 'contact', 'privacy', 'terms', 'disclaimer', 'policy'],
+      urlPatterns: ['/about', '/contact', '/privacy', '/terms', '/disclaimer'],
+      minLinks: 2
+    },
+    'Main Navigation': {
+      keywords: ['home', 'menu', 'navigation', 'skip'],
+      urlPatterns: ['/#', '/menu', '/nav'],
+      minLinks: 3
+    },
+    'Content & Resources': {
+      keywords: ['blog', 'article', 'news', 'post', 'guide', 'resource', 'help'],
+      urlPatterns: ['/blog', '/article', '/news', '/post', '/guide'],
+      minLinks: 2
+    },
+    'Services & Products': {
+      keywords: ['service', 'product', 'buy', 'shop', 'store', 'purchase'],
+      urlPatterns: ['/service', '/product', '/buy', '/shop'],
+      minLinks: 2
+    },
+    'Tools & Calculators': {
+      keywords: ['calculator', 'tool', 'estimator', 'finder', 'compute'],
+      urlPatterns: ['/calculator', '/tool', '/estimator'],
+      minLinks: 2
+    },
+    'Support & Help': {
+      keywords: ['support', 'help', 'faq', 'assistance', 'contact'],
+      urlPatterns: ['/support', '/help', '/faq'],
+      minLinks: 2
+    }
+  };
+  
+  // Check which patterns match the website content
+  Object.entries(patterns).forEach(([categoryName, pattern]) => {
+    const matchingLinks = allLinks.filter(link => {
+      const textMatch = pattern.keywords.some(keyword => 
+        link.text.toLowerCase().includes(keyword) || 
+        link.page_title.toLowerCase().includes(keyword)
+      );
+      const urlMatch = pattern.urlPatterns.some(urlPattern => 
+        link.url.toLowerCase().includes(urlPattern)
+      );
+      return textMatch || urlMatch;
+    });
+    
+    if (matchingLinks.length >= pattern.minLinks) {
+      categories.push(categoryName);
+    }
+  });
+  
+  // If no patterns match, create generic categories based on URL structure
+  if (categories.length === 0) {
+    const urlPaths = new Set();
+    allLinks.forEach(link => {
+      try {
+        const path = new URL(link.url).pathname.split('/')[1];
+        if (path) urlPaths.add(path);
+      } catch {}
+    });
+    
+    urlPaths.forEach(path => {
+      if (path && path.length > 2) {
+        categories.push(`${path.charAt(0).toUpperCase() + path.slice(1)}`);
+      }
+    });
+  }
+  
+  // Always include these basic categories if they have content
+  const basicCategories = ['General Information', 'Main Navigation'];
+  basicCategories.forEach(cat => {
+    if (!categories.includes(cat)) {
+      const hasContent = allLinks.some(link => 
+        link.text.toLowerCase().includes('about') || 
+        link.text.toLowerCase().includes('contact') ||
+        link.text.toLowerCase().includes('home')
+      );
+      if (hasContent) categories.push(cat);
+    }
+  });
+  
+  return categories;
+}
+
+function determineLinkCategory(link, categories) {
+  const text = link.text.toLowerCase();
+  const url = link.url.toLowerCase();
+  
+  // Check each category pattern
+  for (const category of categories) {
+    const patterns = getCategoryPatterns(category);
+    const matches = patterns.some(pattern => 
+      text.includes(pattern) || url.includes(pattern)
+    );
+    if (matches) return category;
+  }
+  
+  // Default to first category or "Other"
+  return categories[0] || "Other";
+}
+
+function getCategoryPatterns(category) {
+  const patternMap = {
+    'General Information': ['about', 'contact', 'privacy', 'terms', 'disclaimer'],
+    'Main Navigation': ['home', 'menu', 'navigation'],
+    'Content & Resources': ['blog', 'article', 'news', 'post', 'guide', 'resource'],
+    'Services & Products': ['service', 'product', 'buy', 'shop', 'store'],
+    'Tools & Calculators': ['calculator', 'tool', 'estimator', 'finder'],
+    'Support & Help': ['support', 'help', 'faq', 'assistance']
+  };
+  
+  return patternMap[category] || [category.toLowerCase()];
+}
+
+function generateLlmsTxt(baseUrl, pagesData, dynamicCategories) {
   if (pagesData.length === 0) {
     return "No content found on the website.";
   }
@@ -378,75 +455,20 @@ function generateLlmsTxt(baseUrl, pagesData, organizedContent) {
   content.push(`Total pages crawled: ${pagesData.length}`);
   content.push("");
   
-  // General Information
-  if (organizedContent.general.size > 0) {
-    content.push("## General Information");
-    content.push("");
-    Array.from(organizedContent.general.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
+  // Dynamic categories
+  const { categories, categorizedLinks } = dynamicCategories;
   
-  // Vehicle Categories
-  if (organizedContent.vehicles.size > 0) {
-    content.push("## Vehicle Categories");
-    content.push("");
-    Array.from(organizedContent.vehicles.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
-  
-  // Tools and Calculators
-  if (organizedContent.tools.size > 0) {
-    content.push("## Tools and Calculators");
-    content.push("");
-    Array.from(organizedContent.tools.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
-  
-  // News and Updates
-  if (organizedContent.news.size > 0) {
-    content.push("## News and Updates");
-    content.push("");
-    Array.from(organizedContent.news.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
-  
-  // Technical Insights
-  if (organizedContent.technical.size > 0) {
-    content.push("## Technical Insights");
-    content.push("");
-    Array.from(organizedContent.technical.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
-  
-  // Guides and Resources
-  if (organizedContent.guides.size > 0) {
-    content.push("## Guides and Resources");
-    content.push("");
-    Array.from(organizedContent.guides.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
-  
-  // Services
-  if (organizedContent.services.size > 0) {
-    content.push("## Services");
-    content.push("");
-    Array.from(organizedContent.services.values()).slice(0, 10).forEach(link => {
-      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
-    });
-    content.push("");
-  }
+  categories.forEach(category => {
+    const links = categorizedLinks[category];
+    if (links && links.size > 0) {
+      content.push(`## ${category}`);
+      content.push("");
+      Array.from(links.values()).slice(0, 10).forEach(link => {
+        content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
+      });
+      content.push("");
+    }
+  });
   
   // Contact Information (extract from page content)
   const contactSection = extractContactInfo(pagesData);
