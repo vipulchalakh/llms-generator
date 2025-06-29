@@ -165,7 +165,13 @@ async function parseSitemapFast(sitemapUrl) {
     // Handle regular sitemap (skip nested sitemaps for speed)
     $('url > loc').each((i, element) => {
       const url = $(element).text().trim();
-      if (url && urls.length < 20) urls.push(url); // Limit URLs
+      if (url && urls.length < 20) {
+        // Clean and validate URL from sitemap
+        const cleanUrl = cleanAndValidateUrl(url);
+        if (cleanUrl) {
+          urls.push(cleanUrl);
+        }
+      }
     });
     
   } catch (error) {
@@ -206,11 +212,14 @@ async function crawlPageFast(url, domain) {
       if (href && text && text.length < 100 && text.length > 2) {
         const fullUrl = new URL(href, url).href;
         
-        // Only add if we haven't seen this URL before
-        if (!seenLinks.has(fullUrl) && isInternalLink(fullUrl, domain)) {
-          seenLinks.add(fullUrl);
+        // Clean and validate URL
+        const cleanUrl = cleanAndValidateUrl(fullUrl);
+        
+        // Only add if URL is valid and we haven't seen it before
+        if (cleanUrl && !seenLinks.has(cleanUrl) && isInternalLink(cleanUrl, domain)) {
+          seenLinks.add(cleanUrl);
           links.push({
-            url: fullUrl,
+            url: cleanUrl,
             text: text,
             category: null
           });
@@ -229,6 +238,72 @@ async function crawlPageFast(url, domain) {
     
   } catch (error) {
     console.error(`Error crawling ${url}:`, error.message);
+    return null;
+  }
+}
+
+function cleanAndValidateUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    
+    // Remove hash fragments
+    urlObj.hash = '';
+    
+    // Remove query parameters
+    urlObj.search = '';
+    
+    // Get the cleaned URL
+    const cleanUrl = urlObj.toString();
+    
+    // Additional validation - exclude certain patterns
+    const excludePatterns = [
+      /\/#/, // URLs with hash fragments
+      /\?/, // URLs with query parameters
+      /\/\d{4}\/\d{2}\/\d{2}/, // Date-based URLs (often duplicate content)
+      /\/page\/\d+/, // Pagination URLs
+      /\/tag\//, // Tag pages
+      /\/category\//, // Category pages (often duplicate)
+      /\/author\//, // Author pages
+      /\/feed\//, // RSS feeds
+      /\/wp-admin\//, // WordPress admin
+      /\/wp-content\//, // WordPress content
+      /\/wp-includes\//, // WordPress includes
+      /\/admin\//, // Admin pages
+      /\/login\//, // Login pages
+      /\/register\//, // Registration pages
+      /\/cart\//, // Shopping cart
+      /\/checkout\//, // Checkout pages
+      /\/search\//, // Search results
+      /\/filter\//, // Filter pages
+      /\/sort\//, // Sort pages
+    ];
+    
+    // Check if URL matches any exclude patterns
+    for (const pattern of excludePatterns) {
+      if (pattern.test(cleanUrl)) {
+        return null; // Exclude this URL
+      }
+    }
+    
+    // Ensure URL is not too long (avoid very long URLs)
+    if (cleanUrl.length > 200) {
+      return null;
+    }
+    
+    // Ensure URL has a meaningful path (not just domain)
+    if (urlObj.pathname === '/' || urlObj.pathname === '') {
+      return cleanUrl; // Allow homepage
+    }
+    
+    // Ensure path has some content (not just slashes)
+    if (urlObj.pathname.length < 2) {
+      return null;
+    }
+    
+    return cleanUrl;
+    
+  } catch (error) {
+    console.log(`Invalid URL: ${url}`);
     return null;
   }
 }
