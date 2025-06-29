@@ -35,14 +35,19 @@ export default function Home() {
     setResult(null)
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
       const response = await fetch('/api/generate-llmstxt', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ url: url.trim() }),
+        signal: controller.signal,
       })
 
+      clearTimeout(timeoutId);
       const data = await response.json()
 
       if (response.ok) {
@@ -50,8 +55,12 @@ export default function Home() {
       } else {
         setError(data.error || 'Failed to generate llms.txt file')
       }
-    } catch (err) {
-      setError('Network error. Please try again.')
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        setError('Request timed out. Please try with a smaller website or contact support.')
+      } else {
+        setError('Network error. Please try again.')
+      }
     } finally {
       setIsGenerating(false)
     }
@@ -121,6 +130,10 @@ export default function Home() {
                 {isGenerating ? 'Generating...' : 'Generate llms.txt'}
               </button>
             </form>
+            
+            <p className="text-sm text-gray-500 mt-2">
+              Processing may take up to 30 seconds for larger websites.
+            </p>
 
             {error && (
               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
