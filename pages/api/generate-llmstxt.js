@@ -35,8 +35,8 @@ export default async function handler(req, res) {
       targetUrl = 'https://' + targetUrl;
     }
 
-    // Crawl the website
-    const result = await crawlWebsite(targetUrl);
+    // Crawl the website with timeout protection
+    const result = await crawlWebsiteWithTimeout(targetUrl);
     
     res.status(200).json(result);
 
@@ -50,21 +50,26 @@ export default async function handler(req, res) {
   }
 }
 
-async function crawlWebsite(baseUrl) {
+async function crawlWebsiteWithTimeout(baseUrl) {
+  const startTime = Date.now();
+  const maxTime = 8000; // 8 seconds max for Vercel
+  
   try {
     const domain = new URL(baseUrl).hostname;
     const allUrls = new Set();
     const pagesData = [];
     
-    // Step 1: Get URLs from sitemap and robots.txt
-    const sitemapUrls = await getSitemapUrls(baseUrl);
-    const robotsUrls = await getRobotsUrls(baseUrl);
+    // Step 1: Quick sitemap check (with timeout)
+    const sitemapUrls = await Promise.race([
+      getSitemapUrls(baseUrl),
+      new Promise(resolve => setTimeout(() => resolve([]), 2000))
+    ]);
     
-    // Combine all URLs and remove duplicates
-    const allUniqueUrls = new Set([baseUrl, ...sitemapUrls, ...robotsUrls]);
+    // Combine URLs
+    const allUniqueUrls = new Set([baseUrl, ...sitemapUrls]);
     
-    // Step 2: Crawl main page first to get additional links
-    const mainPageData = await crawlPage(baseUrl, domain);
+    // Step 2: Crawl main page first
+    const mainPageData = await crawlPageFast(baseUrl, domain);
     if (mainPageData) {
       pagesData.push(mainPageData);
       
@@ -76,13 +81,19 @@ async function crawlWebsite(baseUrl) {
       });
     }
     
-    // Step 3: Crawl all unique URLs (limit to 50 for performance)
-    const urlsToCrawl = Array.from(allUniqueUrls).slice(0, 50);
+    // Step 3: Crawl additional pages (limited and fast)
+    const urlsToCrawl = Array.from(allUniqueUrls).slice(0, 15); // Reduced limit
     
     for (const url of urlsToCrawl) {
-      if (pagesData.length >= 50) break; // Limit total pages
+      // Check timeout
+      if (Date.now() - startTime > maxTime) {
+        console.log('Timeout approaching, stopping crawl');
+        break;
+      }
       
-      const pageData = await crawlPage(url, domain);
+      if (pagesData.length >= 15) break; // Reduced limit
+      
+      const pageData = await crawlPageFast(url, domain);
       if (pageData) {
         pagesData.push(pageData);
         
@@ -95,8 +106,8 @@ async function crawlWebsite(baseUrl) {
       }
     }
     
-    // Step 4: Analyze content and create dynamic categories
-    const dynamicCategories = createDynamicCategories(pagesData);
+    // Step 4: Quick categorization
+    const dynamicCategories = createDynamicCategoriesFast(pagesData);
     
     // Step 5: Generate llms.txt content
     const llmsTxt = generateLlmsTxt(baseUrl, pagesData, dynamicCategories);
@@ -121,62 +132,40 @@ async function getSitemapUrls(baseUrl) {
   const urls = new Set();
   
   try {
-    // Try to find sitemap from robots.txt
-    const robotsResponse = await axios.get(`${baseUrl}/robots.txt`, { timeout: 3000 });
-    const sitemapMatches = robotsResponse.data.match(/Sitemap:\s*(.+)/gi);
+    // Try common sitemap locations first (faster)
+    const commonSitemaps = [
+      '/sitemap.xml',
+      '/sitemap_index.xml'
+    ];
     
-    if (sitemapMatches) {
-      for (const match of sitemapMatches) {
-        const sitemapUrl = match.replace(/Sitemap:\s*/i, '').trim();
-        const sitemapUrls = await parseSitemap(sitemapUrl);
+    for (const sitemapPath of commonSitemaps) {
+      try {
+        const sitemapUrl = `${baseUrl}${sitemapPath}`;
+        const sitemapUrls = await parseSitemapFast(sitemapUrl);
         sitemapUrls.forEach(url => urls.add(url));
+        if (urls.size > 20) break; // Limit sitemap URLs
+      } catch (error) {
+        // Continue to next sitemap
       }
     }
   } catch (error) {
-    console.log('Could not fetch robots.txt:', error.message);
-  }
-  
-  // Try common sitemap locations
-  const commonSitemaps = [
-    '/sitemap.xml',
-    '/sitemap_index.xml',
-    '/sitemap/sitemap.xml',
-    '/sitemap1.xml'
-  ];
-  
-  for (const sitemapPath of commonSitemaps) {
-    try {
-      const sitemapUrl = `${baseUrl}${sitemapPath}`;
-      const sitemapUrls = await parseSitemap(sitemapUrl);
-      sitemapUrls.forEach(url => urls.add(url));
-    } catch (error) {
-      // Continue to next sitemap
-    }
+    console.log('Could not fetch sitemaps:', error.message);
   }
   
   return Array.from(urls);
 }
 
-async function parseSitemap(sitemapUrl) {
+async function parseSitemapFast(sitemapUrl) {
   const urls = [];
   
   try {
-    const response = await axios.get(sitemapUrl, { timeout: 5000 });
+    const response = await axios.get(sitemapUrl, { timeout: 2000 }); // Reduced timeout
     const $ = cheerio.load(response.data, { xmlMode: true });
     
-    // Handle sitemap index
-    $('sitemap > loc').each((i, element) => {
-      const sitemapUrl = $(element).text().trim();
-      // Recursively parse nested sitemaps
-      parseSitemap(sitemapUrl).then(nestedUrls => {
-        nestedUrls.forEach(url => urls.push(url));
-      });
-    });
-    
-    // Handle regular sitemap
+    // Handle regular sitemap (skip nested sitemaps for speed)
     $('url > loc').each((i, element) => {
       const url = $(element).text().trim();
-      if (url) urls.push(url);
+      if (url && urls.length < 20) urls.push(url); // Limit URLs
     });
     
   } catch (error) {
@@ -186,34 +175,12 @@ async function parseSitemap(sitemapUrl) {
   return urls;
 }
 
-async function getRobotsUrls(baseUrl) {
-  const urls = [];
-  
-  try {
-    const response = await axios.get(`${baseUrl}/robots.txt`, { timeout: 3000 });
-    const lines = response.data.split('\n');
-    
-    for (const line of lines) {
-      if (line.startsWith('Allow:') || line.startsWith('Disallow:')) {
-        const path = line.split(':')[1]?.trim();
-        if (path && path !== '/') {
-          urls.push(`${baseUrl}${path}`);
-        }
-      }
-    }
-  } catch (error) {
-    console.log('Could not fetch robots.txt:', error.message);
-  }
-  
-  return urls;
-}
-
-async function crawlPage(url, domain) {
+async function crawlPageFast(url, domain) {
   try {
     const response = await axios.get(url, {
-      timeout: 5000,
+      timeout: 3000, // Reduced timeout
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
     
@@ -225,11 +192,13 @@ async function crawlPage(url, domain) {
     const h1 = $('h1').first().text().trim();
     const firstParagraph = $('p').first().text().trim();
     
-    // Extract links
+    // Extract links (limited for speed)
     const links = [];
     const seenLinks = new Set();
     
     $('a[href]').each((i, element) => {
+      if (links.length >= 20) return false; // Stop after 20 links
+      
       const $el = $(element);
       const href = $el.attr('href');
       const text = $el.text().trim();
@@ -243,7 +212,7 @@ async function crawlPage(url, domain) {
           links.push({
             url: fullUrl,
             text: text,
-            category: null // Will be determined by dynamic categorization
+            category: null
           });
         }
       }
@@ -273,31 +242,30 @@ function isInternalLink(url, domain) {
   }
 }
 
-function createDynamicCategories(pagesData) {
-  // Collect all links and their context
+function createDynamicCategoriesFast(pagesData) {
+  // Collect all links
   const allLinks = [];
   pagesData.forEach(page => {
     page.links.forEach(link => {
       allLinks.push({
         ...link,
         page_title: page.title,
-        page_url: page.url,
-        context: `${page.title} ${page.description} ${page.first_paragraph}`.toLowerCase()
+        page_url: page.url
       });
     });
   });
   
-  // Analyze link patterns and create categories
-  const categories = analyzeLinkPatterns(allLinks);
+  // Quick category detection
+  const categories = detectCategoriesFast(allLinks);
   
-  // Categorize each link
+  // Categorize links
   const categorizedLinks = {};
   categories.forEach(category => {
-    categorizedLinks[category.name] = new Map();
+    categorizedLinks[category] = new Map();
   });
   
   allLinks.forEach(link => {
-    const category = determineLinkCategory(link, categories);
+    const category = determineLinkCategoryFast(link, categories);
     if (category && !categorizedLinks[category].has(link.url)) {
       categorizedLinks[category].set(link.url, {
         url: link.url,
@@ -310,121 +278,61 @@ function createDynamicCategories(pagesData) {
   return { categories, categorizedLinks };
 }
 
-function analyzeLinkPatterns(allLinks) {
+function detectCategoriesFast(allLinks) {
   const categories = [];
   const linkTexts = allLinks.map(link => link.text.toLowerCase());
-  const linkUrls = allLinks.map(link => link.url.toLowerCase());
   
-  // Common patterns that indicate categories
+  // Quick pattern matching
   const patterns = {
-    'General Information': {
-      keywords: ['about', 'contact', 'privacy', 'terms', 'disclaimer', 'policy'],
-      urlPatterns: ['/about', '/contact', '/privacy', '/terms', '/disclaimer'],
-      minLinks: 2
-    },
-    'Main Navigation': {
-      keywords: ['home', 'menu', 'navigation', 'skip'],
-      urlPatterns: ['/#', '/menu', '/nav'],
-      minLinks: 3
-    },
-    'Content & Resources': {
-      keywords: ['blog', 'article', 'news', 'post', 'guide', 'resource', 'help'],
-      urlPatterns: ['/blog', '/article', '/news', '/post', '/guide'],
-      minLinks: 2
-    },
-    'Services & Products': {
-      keywords: ['service', 'product', 'buy', 'shop', 'store', 'purchase'],
-      urlPatterns: ['/service', '/product', '/buy', '/shop'],
-      minLinks: 2
-    },
-    'Tools & Calculators': {
-      keywords: ['calculator', 'tool', 'estimator', 'finder', 'compute'],
-      urlPatterns: ['/calculator', '/tool', '/estimator'],
-      minLinks: 2
-    },
-    'Support & Help': {
-      keywords: ['support', 'help', 'faq', 'assistance', 'contact'],
-      urlPatterns: ['/support', '/help', '/faq'],
-      minLinks: 2
-    }
+    'General Information': ['about', 'contact', 'privacy', 'terms'],
+    'Main Navigation': ['home', 'menu', 'navigation'],
+    'Content & Resources': ['blog', 'article', 'news', 'post', 'guide'],
+    'Services & Products': ['service', 'product', 'buy', 'shop'],
+    'Tools & Calculators': ['calculator', 'tool', 'estimator'],
+    'Support & Help': ['support', 'help', 'faq']
   };
   
-  // Check which patterns match the website content
-  Object.entries(patterns).forEach(([categoryName, pattern]) => {
-    const matchingLinks = allLinks.filter(link => {
-      const textMatch = pattern.keywords.some(keyword => 
+  Object.entries(patterns).forEach(([categoryName, keywords]) => {
+    const matchingLinks = allLinks.filter(link => 
+      keywords.some(keyword => 
         link.text.toLowerCase().includes(keyword) || 
         link.page_title.toLowerCase().includes(keyword)
-      );
-      const urlMatch = pattern.urlPatterns.some(urlPattern => 
-        link.url.toLowerCase().includes(urlPattern)
-      );
-      return textMatch || urlMatch;
-    });
+      )
+    );
     
-    if (matchingLinks.length >= pattern.minLinks) {
+    if (matchingLinks.length >= 2) {
       categories.push(categoryName);
     }
   });
   
-  // If no patterns match, create generic categories based on URL structure
+  // Fallback categories
   if (categories.length === 0) {
-    const urlPaths = new Set();
-    allLinks.forEach(link => {
-      try {
-        const path = new URL(link.url).pathname.split('/')[1];
-        if (path) urlPaths.add(path);
-      } catch {}
-    });
-    
-    urlPaths.forEach(path => {
-      if (path && path.length > 2) {
-        categories.push(`${path.charAt(0).toUpperCase() + path.slice(1)}`);
-      }
-    });
+    categories.push('Main Navigation', 'General Information');
   }
-  
-  // Always include these basic categories if they have content
-  const basicCategories = ['General Information', 'Main Navigation'];
-  basicCategories.forEach(cat => {
-    if (!categories.includes(cat)) {
-      const hasContent = allLinks.some(link => 
-        link.text.toLowerCase().includes('about') || 
-        link.text.toLowerCase().includes('contact') ||
-        link.text.toLowerCase().includes('home')
-      );
-      if (hasContent) categories.push(cat);
-    }
-  });
   
   return categories;
 }
 
-function determineLinkCategory(link, categories) {
+function determineLinkCategoryFast(link, categories) {
   const text = link.text.toLowerCase();
-  const url = link.url.toLowerCase();
   
-  // Check each category pattern
   for (const category of categories) {
-    const patterns = getCategoryPatterns(category);
-    const matches = patterns.some(pattern => 
-      text.includes(pattern) || url.includes(pattern)
-    );
+    const patterns = getCategoryPatternsFast(category);
+    const matches = patterns.some(pattern => text.includes(pattern));
     if (matches) return category;
   }
   
-  // Default to first category or "Other"
   return categories[0] || "Other";
 }
 
-function getCategoryPatterns(category) {
+function getCategoryPatternsFast(category) {
   const patternMap = {
-    'General Information': ['about', 'contact', 'privacy', 'terms', 'disclaimer'],
+    'General Information': ['about', 'contact', 'privacy', 'terms'],
     'Main Navigation': ['home', 'menu', 'navigation'],
-    'Content & Resources': ['blog', 'article', 'news', 'post', 'guide', 'resource'],
-    'Services & Products': ['service', 'product', 'buy', 'shop', 'store'],
-    'Tools & Calculators': ['calculator', 'tool', 'estimator', 'finder'],
-    'Support & Help': ['support', 'help', 'faq', 'assistance']
+    'Content & Resources': ['blog', 'article', 'news', 'post', 'guide'],
+    'Services & Products': ['service', 'product', 'buy', 'shop'],
+    'Tools & Calculators': ['calculator', 'tool', 'estimator'],
+    'Support & Help': ['support', 'help', 'faq']
   };
   
   return patternMap[category] || [category.toLowerCase()];
@@ -463,15 +371,15 @@ function generateLlmsTxt(baseUrl, pagesData, dynamicCategories) {
     if (links && links.size > 0) {
       content.push(`## ${category}`);
       content.push("");
-      Array.from(links.values()).slice(0, 10).forEach(link => {
+      Array.from(links.values()).slice(0, 8).forEach(link => { // Reduced limit
         content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
       });
       content.push("");
     }
   });
   
-  // Contact Information (extract from page content)
-  const contactSection = extractContactInfo(pagesData);
+  // Contact Information (quick extraction)
+  const contactSection = extractContactInfoFast(pagesData);
   if (contactSection) {
     content.push("## Contact Information");
     content.push("");
@@ -479,12 +387,12 @@ function generateLlmsTxt(baseUrl, pagesData, dynamicCategories) {
     content.push("");
   }
   
-  // Page Summaries
+  // Page Summaries (limited)
   content.push("## Page Summaries");
   content.push("");
-  pagesData.slice(0, 20).forEach(page => {
+  pagesData.slice(0, 10).forEach(page => { // Reduced limit
     if (page.title && page.title !== siteTitle) {
-      const summary = page.h1 || page.first_paragraph?.substring(0, 100) || "No description available";
+      const summary = page.h1 || page.first_paragraph?.substring(0, 80) || "No description available";
       content.push(`### ${page.title}`);
       content.push(`URL: ${page.url}`);
       content.push(`Summary: ${summary}`);
@@ -500,11 +408,12 @@ function generateLlmsTxt(baseUrl, pagesData, dynamicCategories) {
   return content.join("\n");
 }
 
-function extractContactInfo(pagesData) {
+function extractContactInfoFast(pagesData) {
   const contactInfo = [];
   const seenContacts = new Set();
   
-  for (const page of pagesData) {
+  // Only check first few pages for speed
+  pagesData.slice(0, 5).forEach(page => {
     const content = `${page.title} ${page.description} ${page.first_paragraph}`.toLowerCase();
     
     // Extract email
@@ -521,7 +430,7 @@ function extractContactInfo(pagesData) {
       const phone = phoneMatch[0].replace(/\s+/g, '');
       contactInfo.push(`- Phone: [${phone}](tel:${phone}): The contact number for direct communication regarding services.`);
     }
-  }
+  });
   
   return contactInfo.length > 0 ? contactInfo.join("\n") : null;
 } 
