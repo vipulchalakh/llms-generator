@@ -52,50 +52,54 @@ export default async function handler(req, res) {
 
 async function crawlWebsite(baseUrl) {
   try {
-    const visitedUrls = new Set();
-    const pagesData = [];
-    const navigationLinks = [];
-    const contactInfo = [];
-    const services = [];
-    const resources = [];
-    
     const domain = new URL(baseUrl).hostname;
+    const allUrls = new Set();
+    const pagesData = [];
     
-    // Start with the main page
+    // Step 1: Get URLs from sitemap and robots.txt
+    const sitemapUrls = await getSitemapUrls(baseUrl);
+    const robotsUrls = await getRobotsUrls(baseUrl);
+    
+    // Combine all URLs and remove duplicates
+    const allUniqueUrls = new Set([baseUrl, ...sitemapUrls, ...robotsUrls]);
+    
+    // Step 2: Crawl main page first to get additional links
     const mainPageData = await crawlPage(baseUrl, domain);
     if (mainPageData) {
       pagesData.push(mainPageData);
-      visitedUrls.add(baseUrl);
       
-      // Extract and categorize links from main page
-      for (const link of mainPageData.links) {
-        categorizeAndAddLink(link, mainPageData.title, navigationLinks, contactInfo, services, resources);
-      }
-      
-      // Crawl additional pages (limit to 10 for performance)
-      const additionalUrls = mainPageData.links
-        .map(link => link.url)
-        .filter(url => !visitedUrls.has(url))
-        .slice(0, 10);
-      
-      for (const url of additionalUrls) {
-        if (visitedUrls.size >= 10) break; // Limit total pages
-        
-        const pageData = await crawlPage(url, domain);
-        if (pageData) {
-          pagesData.push(pageData);
-          visitedUrls.add(url);
-          
-          // Extract links from this page
-          for (const link of pageData.links) {
-            categorizeAndAddLink(link, pageData.title, navigationLinks, contactInfo, services, resources);
-          }
+      // Add internal links from main page
+      mainPageData.links.forEach(link => {
+        if (isInternalLink(link.url, domain)) {
+          allUniqueUrls.add(link.url);
         }
+      });
+    }
+    
+    // Step 3: Crawl all unique URLs (limit to 50 for performance)
+    const urlsToCrawl = Array.from(allUniqueUrls).slice(0, 50);
+    
+    for (const url of urlsToCrawl) {
+      if (pagesData.length >= 50) break; // Limit total pages
+      
+      const pageData = await crawlPage(url, domain);
+      if (pageData) {
+        pagesData.push(pageData);
+        
+        // Add new internal links found on this page
+        pageData.links.forEach(link => {
+          if (isInternalLink(link.url, domain)) {
+            allUniqueUrls.add(link.url);
+          }
+        });
       }
     }
     
-    // Generate llms.txt content
-    const llmsTxt = generateLlmsTxt(baseUrl, pagesData, navigationLinks, contactInfo, services, resources);
+    // Step 4: Organize content by categories
+    const organizedContent = organizeContent(pagesData);
+    
+    // Step 5: Generate llms.txt content
+    const llmsTxt = generateLlmsTxt(baseUrl, pagesData, organizedContent);
     
     return {
       success: true,
@@ -111,6 +115,97 @@ async function crawlWebsite(baseUrl) {
       llms_txt: ''
     };
   }
+}
+
+async function getSitemapUrls(baseUrl) {
+  const urls = new Set();
+  
+  try {
+    // Try to find sitemap from robots.txt
+    const robotsResponse = await axios.get(`${baseUrl}/robots.txt`, { timeout: 3000 });
+    const sitemapMatches = robotsResponse.data.match(/Sitemap:\s*(.+)/gi);
+    
+    if (sitemapMatches) {
+      for (const match of sitemapMatches) {
+        const sitemapUrl = match.replace(/Sitemap:\s*/i, '').trim();
+        const sitemapUrls = await parseSitemap(sitemapUrl);
+        sitemapUrls.forEach(url => urls.add(url));
+      }
+    }
+  } catch (error) {
+    console.log('Could not fetch robots.txt:', error.message);
+  }
+  
+  // Try common sitemap locations
+  const commonSitemaps = [
+    '/sitemap.xml',
+    '/sitemap_index.xml',
+    '/sitemap/sitemap.xml',
+    '/sitemap1.xml'
+  ];
+  
+  for (const sitemapPath of commonSitemaps) {
+    try {
+      const sitemapUrl = `${baseUrl}${sitemapPath}`;
+      const sitemapUrls = await parseSitemap(sitemapUrl);
+      sitemapUrls.forEach(url => urls.add(url));
+    } catch (error) {
+      // Continue to next sitemap
+    }
+  }
+  
+  return Array.from(urls);
+}
+
+async function parseSitemap(sitemapUrl) {
+  const urls = [];
+  
+  try {
+    const response = await axios.get(sitemapUrl, { timeout: 5000 });
+    const $ = cheerio.load(response.data, { xmlMode: true });
+    
+    // Handle sitemap index
+    $('sitemap > loc').each((i, element) => {
+      const sitemapUrl = $(element).text().trim();
+      // Recursively parse nested sitemaps
+      parseSitemap(sitemapUrl).then(nestedUrls => {
+        nestedUrls.forEach(url => urls.push(url));
+      });
+    });
+    
+    // Handle regular sitemap
+    $('url > loc').each((i, element) => {
+      const url = $(element).text().trim();
+      if (url) urls.push(url);
+    });
+    
+  } catch (error) {
+    console.log(`Could not parse sitemap ${sitemapUrl}:`, error.message);
+  }
+  
+  return urls;
+}
+
+async function getRobotsUrls(baseUrl) {
+  const urls = [];
+  
+  try {
+    const response = await axios.get(`${baseUrl}/robots.txt`, { timeout: 3000 });
+    const lines = response.data.split('\n');
+    
+    for (const line of lines) {
+      if (line.startsWith('Allow:') || line.startsWith('Disallow:')) {
+        const path = line.split(':')[1]?.trim();
+        if (path && path !== '/') {
+          urls.push(`${baseUrl}${path}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.log('Could not fetch robots.txt:', error.message);
+  }
+  
+  return urls;
 }
 
 async function crawlPage(url, domain) {
@@ -132,6 +227,8 @@ async function crawlPage(url, domain) {
     
     // Extract links
     const links = [];
+    const seenLinks = new Set();
+    
     $('a[href]').each((i, element) => {
       const $el = $(element);
       const href = $el.attr('href');
@@ -139,7 +236,10 @@ async function crawlPage(url, domain) {
       
       if (href && text && text.length < 100 && text.length > 2) {
         const fullUrl = new URL(href, url).href;
-        if (isInternalLink(fullUrl, domain)) {
+        
+        // Only add if we haven't seen this URL before
+        if (!seenLinks.has(fullUrl) && isInternalLink(fullUrl, domain)) {
+          seenLinks.add(fullUrl);
           links.push({
             url: fullUrl,
             text: text,
@@ -177,52 +277,83 @@ function categorizeLink(url, text, pageTitle) {
   const urlLower = url.toLowerCase();
   const textLower = text.toLowerCase();
   
-  // Contact links
-  const contactKeywords = ['contact', 'about', 'team', 'email', 'phone', 'tel:', 'mailto:', 'support', 'cv', 'resume'];
-  if (contactKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'contact';
+  // General Information
+  const generalKeywords = ['about', 'contact', 'disclaimer', 'privacy', 'terms', 'policy'];
+  if (generalKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
+    return 'general';
   }
   
-  // Service links
-  const serviceKeywords = ['service', 'product', 'pricing', 'features', 'solutions', 'offer', 'hire', 'work'];
+  // Vehicle Categories
+  const vehicleKeywords = ['scooter', 'bike', 'car', 'vehicle', 'tesla', 'audi', 'kia', 'tata'];
+  if (vehicleKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
+    return 'vehicles';
+  }
+  
+  // Tools and Calculators
+  const toolKeywords = ['calculator', 'estimator', 'finder', 'tool', 'emi', 'tco', 'range', 'charging'];
+  if (toolKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
+    return 'tools';
+  }
+  
+  // News and Blog
+  const newsKeywords = ['news', 'blog', 'article', 'post', 'update'];
+  if (newsKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
+    return 'news';
+  }
+  
+  // Technical/Glossary
+  const techKeywords = ['glossary', 'technical', 'battery', 'converter', 'coolant', 'charging'];
+  if (techKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
+    return 'technical';
+  }
+  
+  // Guides and Resources
+  const guideKeywords = ['guide', 'resource', 'help', 'support', 'faq'];
+  if (guideKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
+    return 'guides';
+  }
+  
+  // Services
+  const serviceKeywords = ['service', 'consultation', 'support', 'help'];
   if (serviceKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
     return 'services';
   }
   
-  // Resource links
-  const resourceKeywords = ['blog', 'article', 'news', 'resource', 'guide', 'tutorial', 'help', 'docs', 'story', 'case'];
-  if (resourceKeywords.some(keyword => urlLower.includes(keyword) || textLower.includes(keyword))) {
-    return 'resources';
-  }
-  
-  // Navigation links (default)
+  // Default to navigation
   return 'navigation';
 }
 
-function categorizeAndAddLink(link, pageTitle, navigationLinks, contactInfo, services, resources) {
-  const linkInfo = {
-    url: link.url,
-    text: link.text,
-    page_title: pageTitle
+function organizeContent(pagesData) {
+  const organized = {
+    general: new Map(),
+    vehicles: new Map(),
+    tools: new Map(),
+    news: new Map(),
+    technical: new Map(),
+    guides: new Map(),
+    services: new Map(),
+    navigation: new Map()
   };
   
-  switch (link.category) {
-    case 'navigation':
-      navigationLinks.push(linkInfo);
-      break;
-    case 'contact':
-      contactInfo.push(linkInfo);
-      break;
-    case 'services':
-      services.push(linkInfo);
-      break;
-    case 'resources':
-      resources.push(linkInfo);
-      break;
-  }
+  pagesData.forEach(page => {
+    page.links.forEach(link => {
+      const linkInfo = {
+        url: link.url,
+        text: link.text,
+        page_title: page.title
+      };
+      
+      // Use Map to automatically handle duplicates
+      if (!organized[link.category].has(link.url)) {
+        organized[link.category].set(link.url, linkInfo);
+      }
+    });
+  });
+  
+  return organized;
 }
 
-function generateLlmsTxt(baseUrl, pagesData, navigationLinks, contactInfo, services, resources) {
+function generateLlmsTxt(baseUrl, pagesData, organizedContent) {
   if (pagesData.length === 0) {
     return "No content found on the website.";
   }
@@ -247,41 +378,71 @@ function generateLlmsTxt(baseUrl, pagesData, navigationLinks, contactInfo, servi
   content.push(`Total pages crawled: ${pagesData.length}`);
   content.push("");
   
-  // Navigation Links
-  if (navigationLinks.length > 0) {
-    content.push("## Navigation Links");
+  // General Information
+  if (organizedContent.general.size > 0) {
+    content.push("## General Information");
     content.push("");
-    navigationLinks.slice(0, 10).forEach(link => {
+    Array.from(organizedContent.general.values()).slice(0, 10).forEach(link => {
       content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
     });
     content.push("");
   }
   
-  // Personal Information
-  if (contactInfo.length > 0) {
-    content.push("## Personal Information");
+  // Vehicle Categories
+  if (organizedContent.vehicles.size > 0) {
+    content.push("## Vehicle Categories");
     content.push("");
-    contactInfo.slice(0, 8).forEach(link => {
+    Array.from(organizedContent.vehicles.values()).slice(0, 10).forEach(link => {
       content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
     });
     content.push("");
   }
   
-  // Services and Contact
-  if (services.length > 0) {
-    content.push("## Services and Contact");
+  // Tools and Calculators
+  if (organizedContent.tools.size > 0) {
+    content.push("## Tools and Calculators");
     content.push("");
-    services.slice(0, 8).forEach(link => {
+    Array.from(organizedContent.tools.values()).slice(0, 10).forEach(link => {
       content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
     });
     content.push("");
   }
   
-  // Additional Resources
-  if (resources.length > 0) {
-    content.push("## Additional Resources");
+  // News and Updates
+  if (organizedContent.news.size > 0) {
+    content.push("## News and Updates");
     content.push("");
-    resources.slice(0, 8).forEach(link => {
+    Array.from(organizedContent.news.values()).slice(0, 10).forEach(link => {
+      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
+    });
+    content.push("");
+  }
+  
+  // Technical Insights
+  if (organizedContent.technical.size > 0) {
+    content.push("## Technical Insights");
+    content.push("");
+    Array.from(organizedContent.technical.values()).slice(0, 10).forEach(link => {
+      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
+    });
+    content.push("");
+  }
+  
+  // Guides and Resources
+  if (organizedContent.guides.size > 0) {
+    content.push("## Guides and Resources");
+    content.push("");
+    Array.from(organizedContent.guides.values()).slice(0, 10).forEach(link => {
+      content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
+    });
+    content.push("");
+  }
+  
+  // Services
+  if (organizedContent.services.size > 0) {
+    content.push("## Services");
+    content.push("");
+    Array.from(organizedContent.services.values()).slice(0, 10).forEach(link => {
       content.push(`- [${link.text}](${link.url}): ${link.page_title}`);
     });
     content.push("");
@@ -299,7 +460,7 @@ function generateLlmsTxt(baseUrl, pagesData, navigationLinks, contactInfo, servi
   // Page Summaries
   content.push("## Page Summaries");
   content.push("");
-  pagesData.slice(0, 15).forEach(page => {
+  pagesData.slice(0, 20).forEach(page => {
     if (page.title && page.title !== siteTitle) {
       const summary = page.h1 || page.first_paragraph?.substring(0, 100) || "No description available";
       content.push(`### ${page.title}`);
@@ -319,19 +480,22 @@ function generateLlmsTxt(baseUrl, pagesData, navigationLinks, contactInfo, servi
 
 function extractContactInfo(pagesData) {
   const contactInfo = [];
+  const seenContacts = new Set();
   
   for (const page of pagesData) {
     const content = `${page.title} ${page.description} ${page.first_paragraph}`.toLowerCase();
     
     // Extract email
     const emailMatch = content.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
-    if (emailMatch) {
+    if (emailMatch && !seenContacts.has(emailMatch[0])) {
+      seenContacts.add(emailMatch[0]);
       contactInfo.push(`- Email: [${emailMatch[0]}](mailto:${emailMatch[0]}): The professional email address for inquiries and communication.`);
     }
     
     // Extract phone
     const phoneMatch = content.match(/[\+]?[0-9\s\-\(\)]{10,}/g);
-    if (phoneMatch) {
+    if (phoneMatch && !seenContacts.has(phoneMatch[0])) {
+      seenContacts.add(phoneMatch[0]);
       const phone = phoneMatch[0].replace(/\s+/g, '');
       contactInfo.push(`- Phone: [${phone}](tel:${phone}): The contact number for direct communication regarding services.`);
     }
