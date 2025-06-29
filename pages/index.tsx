@@ -36,7 +36,7 @@ export default function Home() {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
       
       const response = await fetch('/api/generate-llmstxt', {
         method: 'POST',
@@ -50,7 +50,7 @@ export default function Home() {
       clearTimeout(timeoutId);
       const data = await response.json()
 
-      if (response.ok) {
+      if (response.ok && data.success) {
         setResult(data)
       } else {
         setError(data.error || 'Failed to generate llms.txt file')
@@ -132,7 +132,7 @@ export default function Home() {
             </form>
             
             <p className="text-sm text-gray-500 mt-2">
-              Processing may take up to 30 seconds for larger websites.
+              Processing may take up to 15 seconds for larger websites.
             </p>
 
             {error && (

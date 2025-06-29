@@ -8,7 +8,7 @@ from typing import Dict, List, Set, Optional
 import time
 
 class LLMsTxtGenerator:
-    def __init__(self, base_url: str, max_pages: int = 500):
+    def __init__(self, base_url: str, max_pages: int = 20):  # Further reduced for Vercel
         self.base_url = base_url
         self.domain = urlparse(base_url).netloc
         self.max_pages = max_pages
@@ -86,7 +86,7 @@ class LLMsTxtGenerator:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=3)  # Very short timeout
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
@@ -137,21 +137,26 @@ class LLMsTxtGenerator:
     def crawl_site(self):
         """Crawl the entire site starting from base URL."""
         urls_to_visit = [self.base_url]
+        start_time = time.time()
         
         while urls_to_visit and len(self.visited_urls) < self.max_pages:
+            # Check if we're approaching Vercel's timeout (5 seconds for safety)
+            if time.time() - start_time > 5:
+                print("Approaching timeout, stopping crawl")
+                break
+                
             url = urls_to_visit.pop(0)
             page_data = self.crawl_page(url)
             
             if page_data:
                 self.pages_data.append(page_data)
                 
-                # Add new internal links to visit
-                for link in page_data['links']:
+                # Add new internal links to visit (limit to avoid infinite loops)
+                for link in page_data['links'][:5]:  # Only first 5 links
                     if link['url'] not in self.visited_urls and link['url'] not in urls_to_visit:
                         urls_to_visit.append(link['url'])
             
-            # Small delay to be respectful
-            time.sleep(0.1)
+            # No delay to speed up processing
     
     def organize_content(self):
         """Organize crawled content into categories."""
@@ -196,34 +201,34 @@ class LLMsTxtGenerator:
         # Navigation
         if self.navigation_links:
             content.append("## Navigation\n")
-            for link in self.navigation_links[:10]:  # Limit to first 10
+            for link in self.navigation_links[:5]:  # Limit to first 5
                 content.append(f"- [{link['text']}]({link['url']}): {link['page_title']}")
             content.append("")
         
         # Services
         if self.services:
             content.append("## Services & Offerings\n")
-            for service in self.services[:10]:
+            for service in self.services[:5]:
                 content.append(f"- [{service['text']}]({service['url']}): {service['page_title']}")
             content.append("")
         
         # Resources
         if self.resources:
             content.append("## Resources & Content\n")
-            for resource in self.resources[:10]:
+            for resource in self.resources[:5]:
                 content.append(f"- [{resource['text']}]({resource['url']}): {resource['page_title']}")
             content.append("")
         
         # Contact Information
         if self.contact_info:
             content.append("## Contact Information\n")
-            for contact in self.contact_info[:5]:
+            for contact in self.contact_info[:3]:
                 content.append(f"- [{contact['text']}]({contact['url']}): {contact['page_title']}")
             content.append("")
         
         # Page Summaries
         content.append("## Page Summaries\n")
-        for page in self.pages_data[:20]:  # Limit to first 20 pages
+        for page in self.pages_data[:10]:  # Limit to first 10 pages
             if page['title'] and page['title'] != site_title:
                 summary = page['h1'] or page['first_paragraph'][:100] or "No description available"
                 content.append(f"### {page['title']}")
