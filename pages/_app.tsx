@@ -24,7 +24,7 @@ export default function App({ Component, pageProps }: AppProps) {
         <meta name="twitter:title" content="LLMs.txt Generator" />
         <meta name="twitter:description" content="Generate structured llms.txt files for any website" />
         
-        <link rel="icon" href="/favicon.ico" />
+        <link rel="icon" href="/llmtxt-favicon.png" />
         <link rel="canonical" href="https://llmstxtgenerator.info" />
       </Head>
       <Component {...pageProps} />
