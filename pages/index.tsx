@@ -13,6 +13,7 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [result, setResult] = useState<GenerationResult | null>(null)
   const [error, setError] = useState('')
+  const [loadingMessage, setLoadingMessage] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -33,10 +34,18 @@ export default function Home() {
     setIsGenerating(true)
     setError('')
     setResult(null)
+    setLoadingMessage('Starting to crawl your website...')
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+      
+      // Update loading message after a short delay
+      setTimeout(() => {
+        if (isGenerating) {
+          setLoadingMessage('Extracting content and links from your website...')
+        }
+      }, 2000);
       
       const response = await fetch('/api/generate-llmstxt', {
         method: 'POST',
@@ -63,6 +72,7 @@ export default function Home() {
       }
     } finally {
       setIsGenerating(false)
+      setLoadingMessage('')
     }
   }
 
@@ -132,7 +142,7 @@ export default function Home() {
             </form>
             
             <p className="text-sm text-gray-500 mt-2">
-              Processing may take up to 15 seconds for larger websites.
+              Processing may take up to 15 seconds. We're crawling your website to extract content and links.
             </p>
 
             {error && (
@@ -257,7 +267,7 @@ export default function Home() {
               Your llms.txt is generating...
             </h3>
             <p className="text-gray-600">
-              This may take a few moments as we crawl your website and analyze the content.
+              {loadingMessage}
             </p>
           </div>
         </div>
