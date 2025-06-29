@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "pages/api/generate-llmstxt.py": {
-      "runtime": "python3.9"
-    }
-  }
-} 
