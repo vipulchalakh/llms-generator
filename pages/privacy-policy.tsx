@@ -9,8 +9,8 @@ export default function PrivacyPolicy() {
       description="Learn about how LLMs.txt Generator collects, uses, and protects your information."
     >
       <Head>
-        <title>Privacy Policy - LLMs.txt Generator</title>
-        <meta name="description" content="Learn about how LLMs.txt Generator collects, uses, and protects your information." />
+        <title>Privacy Policy | LLMs.txt Generator</title>
+        <meta name="description" content="Read the privacy policy for LLMs.txt Generator to understand how your data is handled and protected." />
       </Head>
 
       <section className="py-16 bg-white">

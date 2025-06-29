@@ -9,8 +9,8 @@ export default function About() {
       description="Learn about llms.txt files and how our generator tool works to create structured website summaries."
     >
       <Head>
-        <title>About - LLMs.txt Generator</title>
-        <meta name="description" content="Learn about llms.txt files and how our generator tool works to create structured website summaries." />
+        <title>About | LLMs.txt Generator</title>
+        <meta name="description" content="Learn about the LLMs.txt Generator project, its mission, and the team behind the tool for structured website summaries." />
       </Head>
 
       <section className="py-16 bg-white">

@@ -37,8 +37,8 @@ export default function Contact() {
       description="Get in touch with the LLMs.txt Generator team for support, feedback, or questions."
     >
       <Head>
-        <title>Contact - LLMs.txt Generator</title>
-        <meta name="description" content="Get in touch with the LLMs.txt Generator team for support, feedback, or questions." />
+        <title>Contact | LLMs.txt Generator</title>
+        <meta name="description" content="Contact the LLMs.txt Generator team for support, feedback, or partnership inquiries. We're here to help you with your website summary needs." />
       </Head>
 
       <section className="py-16 bg-white">

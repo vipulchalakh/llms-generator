@@ -104,8 +104,8 @@ export default function Home() {
   return (
     <Layout>
       <Head>
-        <title>Generate Your llms.txt File Instantly</title>
-        <meta name="description" content="Get a structured summary of your website in seconds. Useful for AI training, content auditing, or LLM indexing." />
+        <title>LLMs.txt Generator | Instantly Generate Website Summaries for AI & SEO</title>
+        <meta name="description" content="Generate a structured llms.txt file for your website. Perfect for AI pretraining, SEO auditing, and content understanding. Fast, free, and easy!" />
       </Head>
 
       {/* Hero Section */}
